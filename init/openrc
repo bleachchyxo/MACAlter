@@ -1,0 +1,20 @@
+#!/sbin/openrc-run
+#
+# macalter - set/spoof MAC early at boot
+#
+# install to /etc/init.d/macalterm
+
+command="/usr/local/bin/macalterm"
+command_args="boot"
+
+depend() {
+    # try to run before network services
+    before net
+}
+
+start() {
+    ebegin "Running macalter boot"
+    ${command} ${command_args}
+    eend $?
+}
+

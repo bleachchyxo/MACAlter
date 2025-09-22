@@ -1,0 +1,14 @@
+[Unit]
+Description=MACAlter - set/spoof MAC early at boot
+DefaultDependencies=no
+Wants=network-pre.target
+Before=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/macalterm boot
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target
+

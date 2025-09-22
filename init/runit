@@ -1,0 +1,6 @@
+#!/bin/sh
+# runit service script for macalter
+# this script is placed at /etc/sv/macalterm/run
+
+exec /usr/local/bin/macalterm boot
+

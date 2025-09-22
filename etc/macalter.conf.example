@@ -1,0 +1,17 @@
+# macalter configuration file
+
+# MODE options:
+#   random            - Generate a new random MAC every boot (any brand)
+#   random-brand      - Generate a new random MAC every boot from specified BRAND
+#   persistent        - Generate a random MAC once (any brand) and keep it forever until changed
+#   persistent-brand  - Generate a random MAC once from specified BRAND and keep it until changed
+#   custom            - Use the CUSTOM_MAC address every boot until changed
+
+MODE=persistent
+
+# Specify the brand for random-brand or persistent-brand modes (case sensitive, matching prefixes.txt sections)
+BRAND=
+
+# Custom MAC address (format XX:XX:XX:XX:XX:XX) for custom mode
+CUSTOM_MAC=
+
