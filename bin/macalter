@@ -1,92 +1,156 @@
 #!/bin/sh
 
-PREFIX_FILE="/etc/macalter/prefixes.txt"
+# macalter - MAC address generator and spoofer
+# Usage:
+#   macalter gen [brand] [--set]      Generate MAC (optionally set)
+#   macalter set XX:XX:XX:XX:XX:XX    Set custom MAC
+#   macalter real                     Show original hardware MAC
+#   macalter revert                   Revert to original MAC
 
-# Detect the first usable interface (non-loopback, non-virtual)
-detect_interface() {
-    ip link | awk -F: '/^[0-9]+: [^l]/ {print $2}' | grep -vE 'lo|docker|vir|br' | head -n1 | tr -d ' '
-}
+set -eu
 
-interface="$(detect_interface)"
+script_path="$(readlink -f "$0")"
+script_dir="$(dirname "$script_path")"
+prefix_file="$script_dir/../prefixes.txt"
+saved_mac_dir="/tmp"
+interface="$(ip -o link show | awk -F': ' '/^[0-9]+: / && $2 !~ /^(lo|vir|br|docker)/ {print $2; exit}')"
 
 if [ -z "$interface" ]; then
     echo "Error: No valid network interface found." >&2
     exit 1
 fi
 
-command="$1"
-arg="$2"
+saved_mac_file="$saved_mac_dir/macalter_${interface}.real"
+
+is_root() {
+    [ "$(id -u)" -eq 0 ]
+}
+
+die_if_not_root() {
+    if ! is_root; then
+        echo "Error: This action requires root privileges. Please run with sudo." >&2
+        exit 1
+    fi
+}
+
+is_valid_mac() {
+    echo "$1" | grep -Eq '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$'
+}
 
 generate_mac() {
-    vendor="$1"
+    brand="$1"
 
-    # Read prefixes
-    if [ ! -f "$PREFIX_FILE" ]; then
-        echo "Error: Prefix file not found at $PREFIX_FILE" >&2
+    if [ ! -f "$prefix_file" ]; then
+        echo "Error: Prefix file not found at $prefix_file" >&2
         exit 1
     fi
 
-    if [ -n "$vendor" ]; then
-        # Search for brand section and pick a random prefix
-        prefix=$(awk -v brand="[$vendor]" '
-            BEGIN {found=0}
-            $0 ~ brand {found=1; next}
-            /^\[/ && found {exit}
-            found && NF {print $0}
-        ' "$PREFIX_FILE" | shuf -n1)
+    if [ -n "$brand" ]; then
+        prefix=$(awk -v b="[$brand]" '
+            $0 == b {found=1; next}
+            /^\[.*\]/ && found {exit}
+            found && NF {print}
+        ' "$prefix_file" | shuf -n1)
     else
-        # Pick any prefix from the whole file
-        prefix=$(awk '
-            /^\[/ {next}
-            NF {print $0}
-        ' "$PREFIX_FILE" | shuf -n1)
+        prefix=$(awk '/^\[/ {next} NF' "$prefix_file" | shuf -n1)
     fi
 
     if [ -z "$prefix" ]; then
-        echo "Error: No valid prefix found (brand: $vendor)" >&2
+        echo "Error: No prefixes found for brand '$brand'" >&2
         exit 1
     fi
 
-    # Generate last 3 octets (random)
-    suffix=$(hexdump -n3 -e '/1 ":%02X"' /dev/urandom)
+    prefix=${prefix%:}
+    suffix=$(hexdump -n3 -e '3/1 ":%02X"' /dev/urandom)
     echo "$prefix$suffix"
 }
 
-set_mac() {
-    new_mac="$1"
+save_real_mac() {
+    if [ ! -f "$saved_mac_file" ]; then
+        cat "/sys/class/net/$interface/address" > "$saved_mac_file"
+    fi
+}
 
-    if ! echo "$new_mac" | grep -Eq '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$'; then
-        echo "Error: Invalid MAC format" >&2
+set_mac() {
+    die_if_not_root
+    new_mac="$1"
+    if ! is_valid_mac "$new_mac"; then
+        echo "Error: Invalid MAC format '$new_mac'" >&2
         exit 1
     fi
+    save_real_mac
+    ip link set dev "$interface" down
+    ip link set dev "$interface" address "$new_mac"
+    ip link set dev "$interface" up
+}
 
-    ip link set "$interface" down
-    ip link set "$interface" address "$new_mac"
-    ip link set "$interface" up
-
-    echo "MAC address set to $new_mac on $interface"
+restore_mac() {
+    die_if_not_root
+    if [ ! -f "$saved_mac_file" ]; then
+        echo "Error: Original MAC address not saved. Cannot revert." >&2
+        exit 1
+    fi
+    original_mac=$(cat "$saved_mac_file")
+    ip link set dev "$interface" down
+    ip link set dev "$interface" address "$original_mac"
+    ip link set dev "$interface" up
+    echo "Restored original MAC $original_mac on interface $interface"
 }
 
 show_real_mac() {
-    cat "/sys/class/net/$interface/address"
+    if [ -f "$saved_mac_file" ]; then
+        cat "$saved_mac_file"
+    else
+        # fallback: current mac (spoofed or not)
+        cat "/sys/class/net/$interface/address"
+    fi
 }
+
+command="${1:-}"
 
 case "$command" in
     gen)
-        mac=$(generate_mac "$arg")
-        echo "$mac"
+        brand="${2:-}"
+        set_flag="${3:-}"
+        if [ "$set_flag" = "--set" ]; then
+            mac=$(generate_mac "$brand")
+            set_mac "$mac"
+            echo "Set MAC address to $mac on interface $interface"
+        elif [ -n "$brand" ] && [ "$brand" = "--set" ]; then
+            mac=$(generate_mac)
+            set_mac "$mac"
+            echo "Set MAC address to $mac on interface $interface"
+        else
+            # just generate & print
+            mac=$(generate_mac "$brand")
+            echo "$mac"
+        fi
         ;;
     set)
-        set_mac "$arg"
+        mac="${2:-}"
+        if [ -z "$mac" ]; then
+            echo "Error: Please specify a MAC address to set." >&2
+            exit 1
+        fi
+        set_mac "$mac"
+        echo "Set MAC address to $mac on interface $interface"
         ;;
     real)
         show_real_mac
         ;;
+    revert)
+        restore_mac
+        ;;
     *)
-        echo "Usage:"
-        echo "  macalter gen [brand]     		# Generate random MAC, optionally with brand"
-        echo "  macalter set XX:XX:XX:XX:XX:XX	# Set specific MAC address"
-        echo "  macalter real            		# Show real MAC address"
+        cat <<EOF
+Usage:
+  macalter gen [brand] [--set]     Generate random MAC (optionally from brand), optionally set it
+  macalter set XX:XX:XX:XX:XX:XX   Set specific MAC address
+  macalter real                    Show original hardware MAC (before spoofing)
+  macalter revert                  Restore original hardware MAC
+
+Note: Changing MAC requires root privileges (run with sudo).
+EOF
         exit 1
         ;;
 esac
