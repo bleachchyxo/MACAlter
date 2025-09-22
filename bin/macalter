@@ -1,0 +1,93 @@
+#!/bin/sh
+
+PREFIX_FILE="/etc/macalter/prefixes.txt"
+
+# Detect the first usable interface (non-loopback, non-virtual)
+detect_interface() {
+    ip link | awk -F: '/^[0-9]+: [^l]/ {print $2}' | grep -vE 'lo|docker|vir|br' | head -n1 | tr -d ' '
+}
+
+interface="$(detect_interface)"
+
+if [ -z "$interface" ]; then
+    echo "Error: No valid network interface found." >&2
+    exit 1
+fi
+
+command="$1"
+arg="$2"
+
+generate_mac() {
+    vendor="$1"
+
+    # Read prefixes
+    if [ ! -f "$PREFIX_FILE" ]; then
+        echo "Error: Prefix file not found at $PREFIX_FILE" >&2
+        exit 1
+    fi
+
+    if [ -n "$vendor" ]; then
+        # Search for brand section and pick a random prefix
+        prefix=$(awk -v brand="[$vendor]" '
+            BEGIN {found=0}
+            $0 ~ brand {found=1; next}
+            /^\[/ && found {exit}
+            found && NF {print $0}
+        ' "$PREFIX_FILE" | shuf -n1)
+    else
+        # Pick any prefix from the whole file
+        prefix=$(awk '
+            /^\[/ {next}
+            NF {print $0}
+        ' "$PREFIX_FILE" | shuf -n1)
+    fi
+
+    if [ -z "$prefix" ]; then
+        echo "Error: No valid prefix found (brand: $vendor)" >&2
+        exit 1
+    fi
+
+    # Generate last 3 octets (random)
+    suffix=$(hexdump -n3 -e '/1 ":%02X"' /dev/urandom)
+    echo "$prefix$suffix"
+}
+
+set_mac() {
+    new_mac="$1"
+
+    if ! echo "$new_mac" | grep -Eq '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$'; then
+        echo "Error: Invalid MAC format" >&2
+        exit 1
+    fi
+
+    ip link set "$interface" down
+    ip link set "$interface" address "$new_mac"
+    ip link set "$interface" up
+
+    echo "MAC address set to $new_mac on $interface"
+}
+
+show_real_mac() {
+    cat "/sys/class/net/$interface/address"
+}
+
+case "$command" in
+    gen)
+        mac=$(generate_mac "$arg")
+        echo "$mac"
+        ;;
+    set)
+        set_mac "$arg"
+        ;;
+    real)
+        show_real_mac
+        ;;
+    *)
+        echo "Usage:"
+        echo "  macalter gen [brand]     		# Generate random MAC, optionally with brand"
+        echo "  macalter set XX:XX:XX:XX:XX:XX	# Set specific MAC address"
+        echo "  macalter real            		# Show real MAC address"
+        exit 1
+        ;;
+esac
+
